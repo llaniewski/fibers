@@ -1,0 +1,194 @@
+<?R
+    it = 1e5
+	dt = 2e-6
+	dump_skip = 200
+	density = 430.0
+	poisson = 0.3
+	restitution = 0.1
+	fric = 0.5
+	damping = 0.0
+	bond_radius = 1.0
+	max_dist_bond = 0.0015
+	min_dist_bond = 0.0011
+	E = 10e6
+	nBondK = E*1e4 #10e9
+	tBondK = nBondK*0.1
+
+	types = 2
+
+	peratomtype = function(x) {
+		n = types
+		if (length(x) == 1) x = rep(x,n)
+		if (length(x) != n) stop("wrong length in per* function")
+		cat("peratomtype",paste0(x,collapse=" "))
+	}
+	peratomtypepair = function(x) {
+		n = types*types
+		if (length(x) == 1) x = rep(x,n)
+		if (length(x) != n) stop("wrong length in per* function")
+		cat("peratomtypepair",types,paste0(x,collapse=" "))
+	}
+?>
+
+variable	dt		equal 2e-7
+variable	i_dump_skip	equal 200
+
+############### initial settings
+
+echo		both
+units		si
+atom_style	granular
+atom_modify	map array
+boundary	p p f
+newton		off
+communicate	single vel yes
+hard_particles	yes
+processors	* * 1
+
+############### domain setup
+
+region		reg_domain block 0.0 0.08 0.0 0.08 0.0 0.08 units box
+create_box	2 reg_domain
+neighbor	5e-4 bin
+neigh_modify	delay 0
+
+###############
+############### begin: define variables
+###############
+
+############### material properties
+
+variable        i_density               equal  430.0
+
+############### Hertz contact model
+
+variable        i_poisson               equal  0.3
+variable        i_restitution           equal  0.1
+variable        i_fric                  equal  0.5
+
+############### cohesion bond
+
+variable        i_damping               equal 0.0
+variable        i_bond_radius           equal 1.0
+variable        i_max_dist_bond         equal 0.0015
+variable        i_min_dist_bond         equal 0.0011
+
+############### variables for bond contact model
+
+variable        i_E                     equal  10e6
+variable        i_nBondK                equal  <?%g E ?>*1e3 #10e9 #<?%g E ?>*1e3
+variable        i_tBondK                equal  <?%g nBondK ?>*0.06
+
+############### material properties
+
+fix             m01 all property/global youngsModulus <?R peratomtype(E) ?>
+fix             m02 all property/global poissonsRatio <?R peratomtype(poisson) ?>
+fix             m03 all property/global coefficientRestitution <?R peratomtypepair(restitution) ?>
+fix             m04 all property/global coefficientFriction <?R peratomtypepair(fric) ?>
+fix             m05 all property/global radiusMultiplierBond <?R peratomtypepair(bond_radius) ?>
+fix             m06 all property/global normalBondStiffnessPerUnitArea <?R peratomtypepair(nBondK) ?>
+fix             m07 all property/global tangentialBondStiffnessPerUnitArea <?R peratomtypepair(tBondK) ?>
+fix             m08 all property/global maxDistanceBond <?R peratomtypepair(max_dist_bond) ?>
+fix             m09 all property/global dampingNormalForceBond <?R peratomtypepair(damping) ?>
+fix             m10 all property/global dampingTangentialForceBond <?R peratomtypepair(damping) ?>
+fix             m11 all property/global dampingNormalTorqueBond <?R peratomtypepair(damping) ?>
+fix             m12 all property/global dampingTangentialTorqueBond <?R peratomtypepair(damping) ?>
+fix             m13 all property/global tsCreateBond scalar 1
+fix             m14 all property/global createDistanceBond <?R peratomtypepair(min_dist_bond) ?>
+
+###############
+############### end: define variables
+###############
+
+############### pair style
+
+pair_style	gran model hertz tangential history cohesion bond
+pair_coeff	* *
+
+############### create particle shape: fiber
+
+create_atoms	1 single 0.01 0.01 0.010
+create_atoms	1 single 0.01 0.01 0.011
+create_atoms	1 single 0.0101 0.01 0.012
+create_atoms	1 single 0.01 0.01 0.013
+create_atoms	1 single 0.01 0.0101 0.014
+set		group all density <?%g density ?> diameter 0.0015
+
+
+
+
+############### Particle insertion
+<?R
+	n = 20
+	tab = data.frame(x=1:n-(n+1)/2,y=0,z=0,r=0.7) * 0.001
+
+	p = expand.grid(a=1:n,b=1:3)
+	tab = data.frame(x=p$a*sqrt(2),y=cos((p$b-1+p$a/2)/3*2*pi),z=sin((p$b-1+p$a/2)/3*2*pi),r=sqrt(3)/2)
+	tab = tab / sqrt(3) * 0.001
+	write.table(tab, "body1.dat", row.names=FALSE, col.names=FALSE)
+?>
+
+fix body1 all particletemplate/multisphere 15485863 atom_type 1 density constant <?%g density ?> &
+		nspheres <?%d nrow(tab) ?> ntry 1000000 spheres file body1.dat scale 1.0 type 1
+fix pdd all particledistribution/discrete/numberbased 15485867 1 body1 1.0
+
+region factory block 0.0 0.08 0.0 0.08 0.0 0.08 units box
+
+fix		ins all insert/pack seed 32452843 distributiontemplate pdd vel constant 0. 0. 0. orientation random &
+		insert_every once overlapcheck yes region factory ntry_mc 10000 volumefraction_region 0.2
+
+
+
+# group		head id 1
+# group		end  id 5
+# fix		bound_head head freeze
+# fix		bound_end end addforce 1 0.0 0.0
+
+fix		stopper_bot all wall/gran model hertz  tangential history primitive type 2 zplane  0.0
+
+
+
+############### Gravity
+ fix		grav all gravity 9.81 vector 0.0 0.0 -1.0
+
+
+#fix		VISC all viscous 0.2
+fix		integrsp all nve/sphere
+
+############### define dump output
+
+fix		ts all check/timestep/gran <?%g dump_skip ?> 0.2 0.2
+
+############### define thermo output
+
+variable	i_disp equal x[5]
+
+############### track the bonds
+
+compute		bond_status all bond/counter
+compute		bond_force  all pair/gran/local/bond
+
+############### screen output
+
+thermo_style	custom step atoms ke cpu time f_ts[1] f_ts[2] c_bond_status[3] v_i_disp
+thermo		<?%g dump_skip ?>
+thermo_modify	lost ignore norm no
+
+############### dump output
+
+dump		dmp1 all custom/vtk <?%g dump_skip ?>  output/balls*.vtk  &
+		  id type x y z vx vy vz fx fy fz omegax omegay omegaz radius
+
+dump		dmp2 all custom <?%g dump_skip ?>      output/balls*.dump &
+		  id type x y z vx vy vz fx fy fz omegax omegay omegaz radius
+
+dump            dmp3 all local/gran/vtk  <?%g dump_skip ?>  output/fbnd*.vtk bond_force
+
+dump_modify     dmp1 pad 9
+dump_modify     dmp2 pad 9
+dump_modify     dmp3 pad 9
+
+############## run settings
+
+timestep   <?%g dt ?>
+run        <?%d it ?>
